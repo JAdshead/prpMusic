@@ -1,6 +1,8 @@
 require 'fiddle'
 require 'fiddle/import'
 
+require_relative '../my-ruby-methods'
+
 
 class LiveMIDI
   ON  = 0x90
@@ -26,12 +28,12 @@ class LiveMIDI
 
   def note_on(channel, note, velocity=64)
     puts "tick - #{note}"
-    # message(ON | channel, note, velocity)
+    # message(ON | 1, 62, velocity)
   end
 
   def note_off(channel, note, velocity=64)
-    
-    # message(OFF | channel, note, velocity)
+    puts "tock - #{note}"
+    # message(OFF | 1, 62, velocity)
   end
 
   def program_change(channel, preset)
@@ -130,22 +132,131 @@ else
 end
 
 
-class Pattern
+class Timer
+  def initialize(resolution)
+    @resolution = resolution
+    @queue = []
 
-  def parse(string)
-    characters = string.split(//)
-    no_spaces = characters.grep(/\S/)
-    return no_spaces.map do |char|
-      case char
-        when /-/ then nil
-        when /\D/ then 0
-        else char.to_i
+    Thread.new do
+      while true
+        dispatch
+        sleep(@resolution)
       end
+    end
+  end
+
+  def self.get(interval)
+    @timers ||={}
+    return @timers[interval] if @timers[interval]
+    return @timers[interval] = self.new(interval)
+  end
+
+
+  private
+  def dispatch
+    now = Time.now.to_f
+    ready, @queue = @queue.partition{|time,proc| time <= now }
+    ready.each {|time, proc| proc.call(time) }
+  end
+
+  public
+  def at(time, &block)
+    time = time.to_f if time.kind_of?(Time)
+    @queue.push [time, block]
+  end
+end
+
+class Metronome
+  def initialize(bpm)
+    @midi = LiveMIDI.new
+    @interval = 60.0 / bpm
+    @timer = Timer.get(@interval / 10)
+    now = Time.now.to_f
+    register_next_bang(now)
+  end
+
+  def register_next_bang(time)
+    @timer.at(time) do |this_time|
+      register_next_bang(this_time + @interval)
+      bang 
+    end
+  end
+
+  def bang
+    @midi.play(1,84,0.1,Time.now.to_f + 0.2)
+
   end
 
 end
 
+class Pattern
+  def initialize(base, string)
+    @base = base
+    @seq = parse(string)
+  end
 
+  def [](index)
+    value, duration = @seq[index % @seq.size]
+    return value, duration if value.nil?
+    return @base + value, duration
+  end
+
+  def size
+    return @seq.size
+  end
+
+  private
+  def parse(string)
+    characters = string.split(//)
+    no_spaces = characters.grep(/\S/)
+    return build(no_spaces)
+  end
+
+  def build(list)
+    return [] if list.empty?
+    duration = 1 + run_length(list.rest)
+    value = case list.first
+      when /-|=/ then nil
+      when /\D/ then 0
+      else list.first.to_i
+    end
+    return [[value, duration]] + build(list.rest)
+  end
+
+  def run_length(list)
+    return 0 if list.empty?
+    return 0 if list.first != "="
+    return 1 + run_length(list.rest)
+  end
+
+end
+
+class SongPlayer 
+
+  def initialize(player,bpm, pattern)
+    @player = player
+    @interval = 60.0 / bpm
+    @pattern = Pattern.new(60, pattern )
+    @timer = Timer.new(@interval / 10)
+    @count = 0
+    play(Time.now.to_f)
+  end
+
+  def play(time)
+    note, duration = @pattern[@count]
+    @count += 1
+    return if @count >= @pattern.size
+    length = @interval * duration - (@interval * 0.10)
+    @player.play(0, note, length) unless note.nil?
+    @timer.at(time + @interval) {|at| play(at) }
+  end
+
+end
+
+bpm = 120
+midi = LiveMIDI.new(bpm)
+SongPlayer.new(midi, bpm, "4202 444= 222= 477=")
+sleep(10)
 
 
 
